@@ -12,23 +12,25 @@ class InterpInvDistNet(torch.nn.Module):
         super().__init__()
 
         logging.info(f"InterpNet - Mean - K={K}")
-        # self.projection_layer = FKAConv(latent_size, latent_size, 16, sampling=None, neighborhood_search=knn, neighborhood_size=16, ratio=1)
-        # self.fc1 = torch.nn.Conv2d(latent_size+3, latent_size, 1)
-        # self.fc2 = torch.nn.Conv2d(latent_size, latent_size, 1)
-        # self.fc3 = torch.nn.Conv2d(latent_size, latent_size, 1)
-        # self.fc8 = torch.nn.Conv1d(latent_size, out_channels, 1)
-        # self.activation = torch.nn.ReLU()
-
+        
         self.fc_in = torch.nn.Conv2d(latent_size+3, latent_size, 1)
-        mlp_layers = [torch.nn.Conv2d(latent_size, latent_size, 1) for _ in range(2)]
+        self.bn_in = torch.nn.BatchNorm2d(latent_size)
+        
+        mlp_layers = []
+        bn_layers = []
+        for _ in range(2):
+            mlp_layers.append(torch.nn.Conv2d(latent_size, latent_size, 1))
+            bn_layers.append(torch.nn.BatchNorm2d(latent_size))
+            
         self.mlp_layers = nn.ModuleList(mlp_layers)
+        self.bn_layers = nn.ModuleList(bn_layers)
+        
         self.fc_out = torch.nn.Conv1d(latent_size, out_channels, 1)
         self.activation = torch.nn.ReLU()
 
         self.k = K
 
     def forward_spatial(self, data):
-
         pos = data["pos"]
         pos_non_manifold = data["pos_non_manifold"]
 
@@ -58,7 +60,6 @@ class InterpInvDistNet(torch.nn.Module):
 
         return ret_data
 
-
     def forward(self, data, spatial_only=False, spectral_only=False):
         if spatial_only:
             return self.forward_spatial(data)
@@ -67,13 +68,11 @@ class InterpInvDistNet(torch.nn.Module):
             spatial_data = self.forward_spatial(data)
             for key, value in spatial_data.items():
                 data[key] = value
-
         
         x = data["latents"]
         indices = data["proj_indices"]
         pos = data["pos"]
         pos_non_manifold = data["pos_non_manifold"]
-
 
         if pos.shape[1] != 3:
             pos = pos.transpose(1,2)
@@ -86,9 +85,10 @@ class InterpInvDistNet(torch.nn.Module):
         pos = pos_non_manifold.unsqueeze(3) - pos
 
         x = torch.cat([x,pos], dim=1)
-        x = self.fc_in(x)
-        for i, l in enumerate(self.mlp_layers):
-            x = l(self.activation(x))
+        x = self.activation(self.bn_in(self.fc_in(x)))
+        
+        for i, (l, bn) in enumerate(zip(self.mlp_layers, self.bn_layers)):
+            x = self.activation(bn(l(x)))
 
         # compute the distances
         distances = torch.clamp(pos.norm(dim=1, keepdim=True), min=1e-7)
